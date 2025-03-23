@@ -1,208 +1,259 @@
-import pyautogui
-import time
-import re
-import pytesseract
-from PIL import Image
-import cv2
-import numpy as np
+import pyautogui  # Automates mouse and keyboard actions
+import time  # Handles time delays
+import re  # For regular expressions to process text
+import pytesseract  # OCR (Optical Character Recognition) for reading text from images
+import keyboard  # Listens for keyboard input to stop script
+import threading  # Allows running keyboard listener separately from main loop
+from PIL import Image  # Handles image processing
+import cv2  # OpenCV for advanced image processing
+import numpy as np  # Handles arrays for image manipulation
+from datetime import datetime  # Manages timestamps for logging
 
+# Global variable to track whether the script should stop
+stop_script = False
 
-# Start script on server's position selection screen.
-# NOTE: if conquerors buff is enabled, scroll down before running.
+# Function to listen for 's' key and stop the script
+def listen_for_stop():
+    global stop_script
+    keyboard.wait("s")  # Wait until 's' key is pressed
+    stop_script = True  # Set stop flag to True
+    print("\n[SYSTEM] Stop key detected. Exiting script...")
 
-# Function to convert HH:mm:ss to total minutes
+# Start the key listener in a separate thread so it runs in the background
+threading.Thread(target=listen_for_stop, daemon=True).start()
+
+# Function to log actions (prints messages and writes them to a log file)
+def log_action(message):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Get current time
+    log_message = f"[{timestamp}] {message}"  # Format log message
+    print(log_message)  # Print message to console
+    with open("stale_roles_log.txt", "a") as log_file:
+        log_file.write(log_message + "\n")  # Append message to log file
+
+# Function to convert HH:mm:ss time format to total minutes
 def time_to_minutes(time_str):
-    hours, minutes, _ = map(int, time_str.split(':'))
-    return hours * 60 + minutes
+    hours, minutes, sec = map(int, time_str.split(':'))  # Split into hours, minutes, seconds
+    return hours * 60 + minutes + sec / 60  # Convert to total minutes
 
-
-def text_sanitization(time_str):
-    if not time_str:
+# Function to sanitize and fix OCR (Optical Character Recognition) text strings
+def text_sanitization(text):
+    if not text:
         return ''
-    if time_str[:3].isdigit():
-        time_str = time_str[1:]  # Remove extra leading digit
-    parts = time_str.split(':')
-    if len(parts) > 2 and len(parts[2]) > 2:
-        parts[2] = parts[2][:2]  # Remove extra trailing digit
-    return ':'.join(parts)
+    # Fix improperly formatted times (e.g., missing leading zeros)
+    text = re.sub(r'^\d+:(\d{1,3}):(\d{1,3})', r'00:\1:\2', text)
+    return text
 
 
-def remove_stale_roles(left, top, width, height, message, x, y):
-    # Define the region to capture (left, top, width, height)
-    region = (left, top, width, height)
+def check_and_navigate_to_role_screen():
+    global stop_script
+    if stop_script: return False  # Stop if 's' was pressed
 
-    # Capture the screen region
+    # Take a screenshot of a specific region where a unique element of the role selection screen appears
+    region = (20, 54, 196, 58)  # Adjust coordinates as needed
     screenshot = pyautogui.screenshot(region=region)
-    # Convert to grayscale for processing
+
+    # Convert to grayscale and process for OCR
     gray = cv2.cvtColor(np.array(screenshot), cv2.COLOR_BGR2GRAY)
-    # Resize for better OCR accuracy
+    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+
+    # Extract text using OCR
+    custom_config = r'--oem 3 --psm 6'
+    text = pytesseract.image_to_string(thresh, config=custom_config).strip()
+    #print(text)
+    text = re.sub(r'#\d+', '#116', text)  # Replace any # followed by numbers with #116
+    text = re.sub(r'[^#0-9a-zA-Z ]', '', text)  # Keep only allowed characters
+    # Check if the text matches expected elements of the role selection screen
+    if "#116" in text:
+        #log_action("Role selection screen detected.")
+        return True  # Already on the correct screen
+    else:
+        log_action("Not on role selection screen. Checking intermediate screen...")
+        pyautogui.click(564, 866)  # Click Bluestacks back button
+        time.sleep(1)
+        # Read another screen first to determine next steps
+        region_secondary = (135, 423, 241, 70)  # Main Page
+        screenshot_secondary = pyautogui.screenshot(region=region_secondary)
+        gray_secondary = cv2.cvtColor(np.array(screenshot_secondary), cv2.COLOR_BGR2GRAY)
+        _, thresh_secondary = cv2.threshold(gray_secondary, 180, 255, cv2.THRESH_BINARY)
+        text_secondary = pytesseract.image_to_string(thresh_secondary, config=custom_config).strip()
+        #print(screenshot_secondary)
+        if "Quit" in text_secondary:  # Adjust expected text
+            log_action("Detected intermediate screen. Proceeding...")
+            pyautogui.click(185, 568)  # Click Cancel
+            time.sleep(1)
+            pyautogui.click(51, 93)  # Click Profile
+            time.sleep(1)
+            pyautogui.click(365, 512)  # Click Role Selection
+            time.sleep(2)
+        else:
+            log_action("Intermediate screen not detected. Navigating manually...")
+            pyautogui.click(564, 866)  # Click Bluestacks back button
+            time.sleep(1)
+            pyautogui.click(51, 93)  # Click Profile
+            time.sleep(1)
+            pyautogui.click(365, 512)  # Click Role Selection
+            time.sleep(2)
+    return check_and_navigate_to_role_screen()
+
+
+# Function to remove stale roles based on timer detected using OCR
+def remove_stale_roles(left, top, width, height, message, x, y):
+    global stop_script
+    if stop_script: return False  # Stop if 's' was pressed
+
+    if not check_and_navigate_to_role_screen():
+        return  # Exit if unable to navigate
+
+    # Take a screenshot of the specified region
+    region = (left, top, width, height)
+    screenshot = pyautogui.screenshot(region=region)
+
+    # Convert screenshot to grayscale for better OCR accuracy
+    gray = cv2.cvtColor(np.array(screenshot), cv2.COLOR_BGR2GRAY)
+
+    # Resize image to improve OCR accuracy
     resized = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-    # Threshold to remove background noise
+
+    # Apply thresholding to make text more distinct
     _, thresh = cv2.threshold(resized, 180, 255, cv2.THRESH_BINARY)
 
-    # Save processed image for debugging
-    cv2.imwrite(f'debug_processed_{message}.png', thresh)
-
-    # OCR configuration to focus on numbers and colons
+    # Extract text using OCR (only digits and colons are allowed)
     custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789:'
-    # Extract text
-    text = pytesseract.image_to_string(thresh, config=custom_config)
-    # Clean up OCR result
-    text = text.replace('\n', '').replace(' ', '')
-    print(f"[DEBUG] Raw OCR Text for {message}: {text}")
+    text = pytesseract.image_to_string(thresh, config=custom_config).replace('\n', '').replace(' ', '')
 
-    # Flexible pattern to handle extra digits
+    log_action(f"Raw OCR Text for {message}: {text}")  # Log raw OCR output
+    text = text_sanitization(text)  # Fix formatting errors
+    log_action(f"Sanitized OCR Text for {message}: {text}")  # Log sanitized text
+
+    # Regex pattern to extract HH:mm:ss format times
     pattern = r'(\d{1,3}):(\d{1,3}):(\d{1,3})'
     matches = re.findall(pattern, text)
 
-    # Threshold in minutes
-    threshold_minutes = 6
+    threshold_minutes = 5.2  # Minimum time before removing a role
 
     if not matches:
-        print(f"{message} Screenshot returned no valid time. Text: {text}")
-    else:
-        # Process first match (assuming it's the correct time)
-        h, m, s = matches[0]
-        # Take only last two digits if extra digits exist, pad to 2 digits
-        h = h[-2:].zfill(2)
-        m = m[-2:].zfill(2)
-        s = s[-2:].zfill(2)
-        clean_time = f"{h}:{m}:{s}"
-        print(f"[DEBUG] Cleaned Time for {message}: {clean_time}")
+        log_action(f"{message} Screenshot returned no valid time. Text: {text}")
+        return True  # Continue execution
 
-        # Convert to total minutes
-        total_minutes = time_to_minutes(clean_time)
-        if total_minutes >= threshold_minutes:
-            print(f"{clean_time} {message} is greater than {threshold_minutes} minutes. Removing...")
-            pyautogui.click(x, y)  # Click title card
-            time.sleep(0.6)
-            pyautogui.click(197, 835)  # Click dismiss
-            time.sleep(0.6)
-            pyautogui.click(192, 564)  # Click Confirm
-            time.sleep(0.6)
-            # Exit position card
-            exitX, exitY = 245, 941
-            pyautogui.click(exitX, exitY)
-            time.sleep(0.6)
-            pyautogui.click(exitX, exitY)
-            time.sleep(0.6)
-        else:
-            print(f"{clean_time} {message} is less than {threshold_minutes} minutes.")
+    # Extract hours, minutes, seconds from OCR result
+    h, m, s = matches[0]
+    clean_time = f"{h[-2:].zfill(2)}:{m[-2:].zfill(2)}:{s[-2:].zfill(2)}"
+    log_action(f"Cleaned Time for {message}: {clean_time}")
 
+    # Convert extracted time to total minutes
+    total_minutes = time_to_minutes(clean_time)
+    #print(total_minutes)
 
+    # If the role is stale (greater than threshold), remove it
+    if total_minutes >= threshold_minutes:
+        log_action(f"{clean_time} {message} is greater than {threshold_minutes} minutes. Removing...")
+        pyautogui.click(x, y)  # Click on the role
+        time.sleep(0.6)
+        pyautogui.click(197, 835)  # Confirm remove
+        time.sleep(0.6)
+        pyautogui.click(192, 564)  # Confirm again
+        time.sleep(0.6)
+        pyautogui.click(245, 941)  # Exit
+        time.sleep(0.6)
+        pyautogui.click(245, 941)  # Double exit
+        time.sleep(0.6)
 
+    return True  # Continue execution
+
+# Function to refresh the list of applicants
 def refresh_positions():
-    # Click back arrow button to exit position card screen
-    pyautogui.click(47, 928)
+    global stop_script
+    if stop_script: return  # Stop if 's' was pressed
+
+    pyautogui.click(47, 928)  # Click refresh button
     time.sleep(1.3)
-    # Click back into capitol
-    pyautogui.click(390, 511)
-    time.sleep(1)
-    # Scroll down to re-center screen
+    pyautogui.click(390, 511)  # Click confirmation
+    time.sleep(3)
+
+    if not check_and_navigate_to_role_screen():
+        return  # Exit if unable to navigate
+
+    time.sleep(3)
+
+    # Scroll through applicants list
     pyautogui.moveTo(278, 1048)
     pyautogui.mouseDown()
     pyautogui.moveTo(2208, 870, duration=0.5)
-    # Release the mouse button
     pyautogui.mouseUp()
-    time.sleep(.3)
+    time.sleep(0.3)
 
-
+# Function to approve all applicants in the list
 def approve_applicant_list(x, y):
-    # Click the position card from given coordinates.
-    # click the approve button location a few times. Then exit out of the position card.
-    clickSeconds1 = .65
-    clickSeconds2 = .35
+    global stop_script
+    if stop_script: return False  # Stop if 's' was pressed
 
-    # click position card
-    pyautogui.click(x, y)
-    time.sleep(clickSeconds1)
-    # click list button
-    listX = 461
-    listY = 834
-    pyautogui.click(listX, listY)
-    time.sleep(clickSeconds1)
-    # scroll up twice to avoid approving players lower in the queue
-    pyautogui.moveTo(207, 235)
-    pyautogui.mouseDown()
-    pyautogui.moveTo(213, 361, duration=0.15)
-    pyautogui.mouseUp()
-    time.sleep(.15)
-    pyautogui.moveTo(207, 235)
-    pyautogui.mouseDown()
-    pyautogui.moveTo(213, 361, duration=0.18)
-    pyautogui.mouseUp()
-    time.sleep(.3)
-    # click approve
-    approveX = 388
-    approveY = 253
-    for i in range(3):
-        pyautogui.click(approveX, approveY)
-        time.sleep(clickSeconds2)
-    # exit position card
-    exitX = 257
-    exitY = 940
-    pyautogui.click(exitX, exitY)
-    time.sleep(clickSeconds2)
-    pyautogui.click(exitX, exitY)
-    time.sleep(clickSeconds1)
-    return True
+    if not check_and_navigate_to_role_screen():
+        return  # Exit if unable to navigate
 
+    time.sleep(0.45)
+    pyautogui.click(x, y)  # Click on applicant
+    time.sleep(0.6)
+    pyautogui.click(461, 834)  # Click approve button
+    time.sleep(0.45)
 
+    # Scroll through the list of applicants
+    for _ in range(3):
+        pyautogui.moveTo(189, 235)
+        pyautogui.mouseDown()
+        pyautogui.moveTo(189, 700, duration=0.18)
+        pyautogui.mouseUp()
+        time.sleep(0.15)
+
+    # Click approve on multiple applicants
+    for _ in range(4):
+        pyautogui.click(388, 253)
+        time.sleep(0.25)
+
+    pyautogui.click(257, 940)  # Exit screen
+    time.sleep(0.25)
+    pyautogui.click(257, 940)  # Double exit
+    time.sleep(0.45)
+
+    return True  # Continue execution
+
+# Main script logic
 def main():
-    # Conquerors Buff includes two additional position cards. Set to False if conquerors buff is disabled.
-    conquerorsBuff = False
-    # list of coordinates for each position card, ordered Mil Cmdr to Sec Interior top left to bottom right
-    if conquerorsBuff:
-        coordinates = [
-            (2109, 441),  # Military Commander
-            (2316, 425),  # Administration Commander
-            (2212, 677),  # Secretary of Strategy...
-            (2396, 636),
-            (2053, 973),
-            (2209, 850),
-            # Note, a player liking the bot's profile makes a permanent screen appear. This may be exitited via the "Awesome" button.
-            (2383, 955)
-        ]
+    global stop_script
+    log_action("Script started. Press 's' to stop.")
 
-        staleRoleCoordinates = [
-            (2083, 485, 77, 24, 'Military Commander', 2109, 441),
-            (2293, 485, 77, 24, 'Administrative Commander', 2316, 425),
-            (2184, 718, 106, 27, 'Secretary of Strategy', 2212, 677),
-            (2366, 718, 106, 27, 'Secretary of Security', 2396, 636),
-            (2002, 951, 106, 27, 'Secretary of Development', 2053, 973),
-            (2184, 951, 106, 27, 'Secretary of Science', 2209, 850)
-        ]
-    else:
-        coordinates = [
-            (270, 524),  # Secretary of Strategy...
-            (432, 534),
-            (114, 719),
-            (279, 733),
-            (431, 729)
-            # Note, a player liking the bot's profile makes a permanent screen appear. This may be exitited via the 'Awesome' button.
+    if not check_and_navigate_to_role_screen():
+        return  # Exit if unable to navigate
 
-        ]
-        staleRoleCoordinates = [
-            (218, 418, 112, 172, 'Secretary of Strategy', 277, 547),
-            (364, 423, 116, 171, 'Secretary of Security', 422, 555),
-            (59, 617, 116, 179, 'Secretary of Development', 119, 746),
-            (205, 614, 112, 172, 'Secretary of Science', 264, 756),
-            (373, 616, 117, 175, 'Secretary of Interior', 425, 754),
-        ]
-    time.sleep(5)  # giving time to get screen ready
+    # Define coordinates for applicant approval
+    coordinates = [(270, 524), (432, 534), (114, 719), (279, 733), (431, 729)]
+
+    # Define coordinates for checking stale roles
+    staleRoleCoordinates = [
+        (218, 418, 112, 172, 'Secretary of Strategy', 277, 547),
+        (364, 423, 116, 171, 'Secretary of Security', 422, 555),
+        (59, 617, 116, 179, 'Secretary of Development', 119, 746),
+        (205, 614, 112, 172, 'Secretary of Science', 264, 756),
+        (373, 616, 117, 175, 'Secretary of Interior', 425, 754),
+    ]
+
+    time.sleep(3)  # Delay before execution starts
     i = 9
-    while True:
-        i += 1
-        # Iterate through the positions and approve all
-        for x, y in coordinates:
-            action = approve_applicant_list(x, y)
-        if i % 5 == 0:
-            refresh_positions()
-            # Iterate through positions to check for stale activity
-            for left, top, width, height, message, x, y in staleRoleCoordinates:
-                remove_stale_roles(left, top, width, height, message, x, y)
-        time.sleep(4)  # giving operator time to stop the script
 
+    while not stop_script:  # Loop runs until 's' is pressed
+        i += 1
+        for x, y in coordinates:
+            if not approve_applicant_list(x, y):
+                return  # Exit if stopped
+
+        if i % 3 == 0:
+            refresh_positions()
+            for left, top, width, height, message, x, y in staleRoleCoordinates:
+                if not remove_stale_roles(left, top, width, height, message, x, y):
+                    return  # Exit if stopped
+
+        time.sleep(4)  # Short delay between cycles
+
+    log_action("Script stopped.")
 
 if __name__ == "__main__":
     main()
